@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-06-10 00:00:00 IST",
+  "timestamp": "2026-06-10 21:12:33 IST",
   "market_open": false,
   "NIFTY": {
     "pcr": null,
@@ -13,7 +13,7 @@
     "pe_oi": null,
     "max_pain": null
   },
-  "vix": null,
-  "status": "initializing",
+  "vix": 15.63,
+  "status": "market_closed",
   "error": null
 }
