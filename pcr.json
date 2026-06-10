@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-06-10 00:00:00 IST",
+  "market_open": false,
+  "NIFTY": {
+    "pcr": null,
+    "ce_oi": null,
+    "pe_oi": null,
+    "max_pain": null
+  },
+  "BANKNIFTY": {
+    "pcr": null,
+    "ce_oi": null,
+    "pe_oi": null,
+    "max_pain": null
+  },
+  "vix": null,
+  "status": "initializing",
+  "error": null
+}
