@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-06-10 21:12:33 IST",
-  "market_open": false,
+  "timestamp": "2026-06-11 13:36:23 IST",
+  "market_open": true,
   "NIFTY": {
     "pcr": null,
     "ce_oi": null,
@@ -13,7 +13,7 @@
     "pe_oi": null,
     "max_pain": null
   },
-  "vix": 15.63,
-  "status": "market_closed",
-  "error": null
+  "vix": 15.6,
+  "status": "ok",
+  "error": "NSE option chain blocked"
 }
