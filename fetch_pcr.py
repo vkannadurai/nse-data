@@ -1,233 +1,152 @@
 """
-fetch_pcr.py
-Fetches PCR, VIX and Max Pain from NSE option chain.
-Runs on GitHub Actions every 5 minutes during market hours.
-Output: pcr.json (committed to repo root)
-Author: vka — Arivu Nilai
+fetch_pcr.py — NSE PCR + VIX + MaxPain fetcher
+Author: VKA
+Runs every 5 min via GitHub Actions (Mon-Fri 9:15-15:30 IST)
+Writes to pcr.json in repo root
 """
 
-import json, time, datetime, os, sys, random
+import json, os, time, datetime
+from pathlib import Path
+
 try:
     import requests
 except ImportError:
-    os.system("pip install requests --quiet")
+    os.system('pip install requests -q')
     import requests
 
-# ── IST helpers ───────────────────────────────────────────────────────────────
+IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+OUTPUT = Path(__file__).parent / 'pcr.json'
+SYMBOLS = ['NIFTY', 'BANKNIFTY']
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.nseindia.com/',
+    'Connection': 'keep-alive',
+}
+
 def now_ist():
-    return datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+    return datetime.datetime.now(IST)
 
-def is_market_open():
-    n = now_ist()
-    if n.weekday() >= 5:
-        return False
-    mins = n.hour * 60 + n.minute
-    return 555 <= mins <= 935  # 9:15 to 15:35 IST
+def ts():
+    return now_ist().strftime('%Y-%m-%d %H:%M:%S IST')
 
-# ── Browser-like session ──────────────────────────────────────────────────────
-def make_session():
+def load_existing():
+    try:
+        return json.loads(OUTPUT.read_text())
+    except:
+        return {}
+
+def get_nse_session():
     s = requests.Session()
-    # Rotate user agents to avoid detection
-    uas = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    ]
-    s.headers.update({
-        "User-Agent": random.choice(uas),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Cache-Control": "max-age=0",
-    })
-    return s
-
-def warm_up_session(s):
-    """Visit NSE homepage first to get session cookies — critical for API access"""
+    s.headers.update(HEADERS)
     try:
-        r = s.get("https://www.nseindia.com", timeout=10)
-        time.sleep(random.uniform(1.5, 3.0))
-        # Visit option chain page to set more cookies
-        s.headers.update({
-            "Referer": "https://www.nseindia.com/",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-            "Accept": "application/json, text/plain, */*",
-            "X-Requested-With": "XMLHttpRequest",
-        })
-        s.get("https://www.nseindia.com/option-chain", timeout=10)
-        time.sleep(random.uniform(1.0, 2.0))
-        return True
+        s.get('https://www.nseindia.com', timeout=10)
+        time.sleep(1)
+        s.get('https://www.nseindia.com/option-chain', timeout=10)
+        time.sleep(1)
+        return s
     except Exception as e:
-        print(f"Warm-up error: {e}")
-        return False
+        print(f'Session setup failed: {e}')
+        return s
 
-# ── Fetch NSE option chain ────────────────────────────────────────────────────
-def fetch_option_chain(s, symbol="NIFTY"):
-    url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
+def fetch_option_chain(session, symbol):
+    url = f'https://www.nseindia.com/api/option-chain-indices?symbol={symbol}'
     try:
-        r = s.get(url, timeout=15)
-        if r.status_code == 200:
-            return r.json()
-        print(f"Option chain {symbol}: HTTP {r.status_code}")
-        return None
-    except Exception as e:
-        print(f"Option chain {symbol} error: {e}")
-        return None
-
-# ── Calculate PCR from option chain ──────────────────────────────────────────
-def calc_pcr(data):
-    if not data:
-        return None, None, None
-    try:
-        filtered = data.get("filtered", {})
-        ce_oi = filtered.get("CE", {}).get("totOI", 0)
-        pe_oi = filtered.get("PE", {}).get("totOI", 0)
-        if ce_oi > 0:
-            pcr = round(pe_oi / ce_oi, 3)
-        else:
-            pcr = None
-        # Underlying value (spot)
-        spot = (data.get("records", {}).get("underlyingValue")
-                or filtered.get("CE", {}).get("underlyingValue")
-                or 0)
-        return pcr, int(ce_oi), int(pe_oi)
-    except Exception as e:
-        print(f"PCR calc error: {e}")
-        return None, None, None
-
-# ── Calculate Max Pain ────────────────────────────────────────────────────────
-def calc_max_pain(data):
-    if not data:
-        return None
-    try:
-        records = data.get("records", {}).get("data", [])
-        strikes = {}
-        for r in records:
-            k = r.get("strikePrice", 0)
-            if not k:
-                continue
-            ce_oi = r.get("CE", {}).get("openInterest", 0) or 0
-            pe_oi = r.get("PE", {}).get("openInterest", 0) or 0
-            strikes[k] = {"ce": ce_oi, "pe": pe_oi}
-        if not strikes:
+        r = session.get(url, timeout=15)
+        if r.status_code != 200:
+            print(f'{symbol} option chain: HTTP {r.status_code}')
             return None
-        # Max pain = strike where total $ pain for option buyers is maximum for sellers
-        all_strikes = sorted(strikes.keys())
-        min_pain = float("inf")
-        max_pain_strike = None
-        for test_k in all_strikes:
-            pain = 0
-            for k, v in strikes.items():
-                # CE pain: all CE buyers above test_k lose
-                if k < test_k:
-                    pain += v["ce"] * (test_k - k)
-                # PE pain: all PE buyers below test_k lose
-                if k > test_k:
-                    pain += v["pe"] * (k - test_k)
-            if pain < min_pain:
-                min_pain = pain
-                max_pain_strike = test_k
-        return max_pain_strike
+        d = r.json()
+        records = d.get('records', {}).get('data', [])
+        if not records:
+            return None
+        ce_oi = sum(x.get('CE', {}).get('openInterest', 0) or 0 for x in records if 'CE' in x)
+        pe_oi = sum(x.get('PE', {}).get('openInterest', 0) or 0 for x in records if 'PE' in x)
+        pcr = round(pe_oi / ce_oi, 2) if ce_oi > 0 else None
+        strikes = {}
+        for x in records:
+            strike = x.get('strikePrice', 0)
+            if strike <= 0:
+                continue
+            ce = x.get('CE', {}).get('openInterest', 0) or 0
+            pe = x.get('PE', {}).get('openInterest', 0) or 0
+            strikes[strike] = {'ce': ce, 'pe': pe}
+        max_pain = None
+        if strikes:
+            min_pain = float('inf')
+            for s in strikes:
+                pain = sum(max(0, s - k) * v['ce'] + max(0, k - s) * v['pe'] for k, v in strikes.items())
+                if pain < min_pain:
+                    min_pain = pain
+                    max_pain = s
+        return {'pcr': pcr, 'ce_oi': ce_oi, 'pe_oi': pe_oi, 'max_pain': max_pain}
     except Exception as e:
-        print(f"Max pain error: {e}")
+        print(f'{symbol} fetch error: {e}')
         return None
 
-# ── Fetch VIX from Yahoo Finance (backup) ────────────────────────────────────
-def fetch_vix_yahoo():
+def fetch_vix(session):
     try:
-        r = requests.get(
-            "https://query2.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?range=1d&interval=1d",
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-            timeout=10
-        )
+        r = session.get('https://www.nseindia.com/api/allIndices', timeout=10)
         if r.status_code == 200:
-            d = r.json()
-            res = d.get("chart", {}).get("result", [{}])[0]
-            meta = res.get("meta", {})
-            v = meta.get("regularMarketPrice") or meta.get("previousClose") or meta.get("chartPreviousClose")
-            if v and v > 0:
-                return round(float(v), 2)
+            for item in r.json().get('data', []):
+                if 'VIX' in item.get('index', '').upper():
+                    return round(float(item.get('last', 0)), 2)
     except Exception as e:
-        print(f"VIX Yahoo error: {e}")
+        print(f'VIX fetch error: {e}')
     return None
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+def fetch_vix_yahoo(session):
+    try:
+        url = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EINDIAVIX?interval=1d&range=1d'
+        r = session.get(url, timeout=10)
+        if r.status_code == 200:
+            result = r.json()['chart']['result'][0]
+            return round(float(result['meta']['regularMarketPrice']), 2)
+    except Exception as e:
+        print(f'Yahoo VIX error: {e}')
+    return None
+
 def main():
-    ist = now_ist()
-    ist_str = ist.strftime("%Y-%m-%d %H:%M:%S IST")
-    market_open = is_market_open()
-
-    print(f"Fetch started: {ist_str} | Market: {'OPEN' if market_open else 'CLOSED'}")
-
-    result = {
-        "timestamp": ist_str,
-        "market_open": market_open,
-        "NIFTY": {"pcr": None, "ce_oi": None, "pe_oi": None, "max_pain": None},
-        "BANKNIFTY": {"pcr": None, "ce_oi": None, "pe_oi": None, "max_pain": None},
-        "vix": None,
-        "status": "ok",
-        "error": None
+    print(f'[{ts()}] fetch_pcr.py starting')
+    existing = load_existing()
+    output = {
+        'timestamp': ts(),
+        'market_open': True,
+        'vix': existing.get('vix'),
+        'status': 'ok',
     }
+    for sym in SYMBOLS:
+        output[sym] = existing.get(sym, {'pcr': None, 'ce_oi': None, 'pe_oi': None, 'max_pain': None})
 
-    # Always fetch VIX (works even when market closed)
-    vix = fetch_vix_yahoo()
+    session = get_nse_session()
+
+    vix = fetch_vix(session) or fetch_vix_yahoo(session)
     if vix:
-        result["vix"] = vix
-        print(f"VIX: {vix}")
-
-    # Fetch PCR only during market hours (NSE API returns stale data otherwise)
-    if market_open:
-        s = make_session()
-        warmed = warm_up_session(s)
-        print(f"Session warmed: {warmed}")
-
-        # NIFTY
-        ndata = fetch_option_chain(s, "NIFTY")
-        if ndata:
-            pcr, ce_oi, pe_oi = calc_pcr(ndata)
-            max_pain = calc_max_pain(ndata)
-            result["NIFTY"] = {
-                "pcr": pcr,
-                "ce_oi": ce_oi,
-                "pe_oi": pe_oi,
-                "max_pain": max_pain
-            }
-            print(f"NIFTY PCR: {pcr} | CE OI: {ce_oi} | PE OI: {pe_oi} | Max Pain: {max_pain}")
-        else:
-            result["error"] = "NSE option chain blocked"
-            print("NIFTY: NSE blocked this run")
-
-        time.sleep(random.uniform(2, 4))
-
-        # BANKNIFTY
-        bdata = fetch_option_chain(s, "BANKNIFTY")
-        if bdata:
-            bpcr, bce, bpe = calc_pcr(bdata)
-            bmax = calc_max_pain(bdata)
-            result["BANKNIFTY"] = {
-                "pcr": bpcr,
-                "ce_oi": bce,
-                "pe_oi": bpe,
-                "max_pain": bmax
-            }
-            print(f"BANKNIFTY PCR: {bpcr} | Max Pain: {bmax}")
+        output['vix'] = vix
+        print(f'VIX: {vix}')
     else:
-        print("Market closed — skipping PCR fetch")
-        result["status"] = "market_closed"
+        print('VIX: unavailable')
 
-    # Write output
-    out = json.dumps(result, indent=2)
-    with open("pcr.json", "w") as f:
-        f.write(out)
-    print(f"Written pcr.json: {out[:200]}")
+    error = None
+    any_success = False
+    for sym in SYMBOLS:
+        time.sleep(2)
+        data = fetch_option_chain(session, sym)
+        if data:
+            output[sym] = data
+            any_success = True
+            print(f'{sym}: PCR={data["pcr"]} MaxPain={data["max_pain"]}')
+        else:
+            error = 'NSE option chain blocked'
+            print(f'{sym}: failed')
 
-if __name__ == "__main__":
+    if not any_success and error:
+        output['error'] = error
+
+    OUTPUT.write_text(json.dumps(output, indent=2))
+    print(f'[{ts()}] Done')
+
+if __name__ == '__main__':
     main()
